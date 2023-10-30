@@ -1,37 +1,25 @@
 package db
 
 import (
+	"chatbot/stories"
 	"database/sql"
 	"encoding/json"
+
 	_ "github.com/mattn/go-sqlite3"
-	"message-bot-demo/flows"
 )
 
-var _db *sql.DB
-
-func Open(path string) error {
+func Open(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", path)
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	_db = db
-	return nil
+	return db, nil
 }
 
-func Close() error {
-	return _db.Close()
-}
-
-func InitTables(path string) error {
-	db, err := sql.Open("sqlite3", path)
-
-	if err != nil {
-		return err
-	}
-
-	err = createFlowsTable(db)
+func InitTables(db *sql.DB) error {
+	err := createStoriesTable(db)
 	if err != nil {
 		return err
 	}
@@ -49,8 +37,8 @@ func InitTables(path string) error {
 	return nil
 }
 
-func flowToJSON(flow *flows.Flow) (string, error) {
-	jsonText, err := json.Marshal(flow)
+func storyToJSON(story *stories.Story) (string, error) {
+	jsonText, err := json.Marshal(story)
 
 	if err != nil {
 		return "", err
@@ -59,16 +47,16 @@ func flowToJSON(flow *flows.Flow) (string, error) {
 	return string(jsonText), nil
 }
 
-// insert a json representation of the demo flow to the db
-func PopulateDB() error {
-	demoFlow := flows.DemoFlowFactory()
+// insert a json representation of the demo story to the db
+func PopulateDB(_db *sql.DB) error {
+	demoStory := stories.DemoStoryFactory()
 
-	jsonFlow, err := flowToJSON(demoFlow)
+	jsonStory, err := storyToJSON(demoStory)
 	if err != nil {
 		return err
 	}
 
-	err = InsertFlowData("demo", jsonFlow)
+	err = InsertStoryData(_db, "demo", jsonStory)
 	if err != nil {
 		return err
 	}
@@ -76,47 +64,47 @@ func PopulateDB() error {
 	return nil
 }
 
-func createFlowsTable(db *sql.DB) error {
+func createStoriesTable(_db *sql.DB) error {
 	statement := `
-CREATE TABLE IF	NOT	EXISTS flows (
-	flow TEXT PRIMARY KEY,
+CREATE TABLE IF	NOT	EXISTS stories (
+	story TEXT PRIMARY KEY,
 	data TEXT
 );`
-	_, err := db.Exec(statement)
+	_, err := _db.Exec(statement)
 	return err
 }
 
-func createUsersTable(db *sql.DB) error {
+func createUsersTable(_db *sql.DB) error {
 	statement := `
 CREATE TABLE IF	NOT	EXISTS users (
 	userId TEXT	PRIMARY	KEY,
-	currentFlow	TEXT,
+	currentStory	TEXT,
 	stateId	INTEGER,
 	params TEXT
 );`
-	_, err := db.Exec(statement)
+	_, err := _db.Exec(statement)
 	return err
 }
 
-func createStatsTable(db *sql.DB) error {
+func createStatsTable(_db *sql.DB) error {
 	statement := `
 CREATE TABLE stats (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	userId TEXT,
-	flow TEXT,
+	story TEXT,
 	visitedNode	INTEGER,
 	FOREIGN	KEY	(userId) REFERENCES	users(userId),
-	FOREIGN	KEY	(flow) REFERENCES flows(flow)
+	FOREIGN	KEY	(story) REFERENCES stories(story)
 );`
-	_, err := db.Exec(statement)
+	_, err := _db.Exec(statement)
 	return err
 }
 
-// get json data for specified flow
-func GetFlowDataByName(flowName string) (string, error) {
+// get json data for specified story
+func GetStoryDataByName(_db *sql.DB, storyName string) (string, error) {
 	var data string
-	statement := `SELECT data FROM flows WHERE flow	= ?`
-	err := _db.QueryRow(statement, flowName).Scan(&data)
+	statement := `SELECT data FROM stories WHERE story	= ?`
+	err := _db.QueryRow(statement, storyName).Scan(&data)
 
 	if err != nil {
 		return "", err
@@ -125,26 +113,30 @@ func GetFlowDataByName(flowName string) (string, error) {
 	return data, nil
 }
 
-// add a flow to the db
-func InsertFlowData(flowName string, data string) error {
-	statement := `INSERT INTO flows	(flow, data) VALUES	(?,	?);`
-	_, err := _db.Exec(statement, flowName, data)
+// add a story to the db
+func InsertStoryData(_db *sql.DB, storyName string, data string) error {
+	statement := `INSERT INTO stories	(story, data) VALUES	(?,	?);`
+	_, err := _db.Exec(statement, storyName, data)
 	return err
 }
 
-// get statistics for each state for the given flow
-func GetFlowStats(flowName string) (*flows.FlowStats, error) {
-	flowStats := &flows.FlowStats{}
-	statement := `SELECT visitedNode, COUNT(*) FROM	stats WHERE	flow = ? GROUP BY visitedNode`
+// get statistics for each state for the given story
+func GetStoriestats(_db *sql.DB, storyName string) (*stories.Storiestats, error) {
+	storiestats := &stories.Storiestats{}
+	statement := `SELECT visitedNode, COUNT(*) FROM	stats WHERE	story = ? GROUP BY visitedNode`
 
-	rows, err := _db.Query(statement, flowName)
+	rows, err := _db.Query(statement, storyName)
+	if err != nil {
+		return nil, err
+	}
+
 	defer rows.Close()
 
 	if err != nil {
 		return nil, err
 	}
 
-	flowStats.Stats = map[int]int{}
+	storiestats.Stats = map[int]int{}
 
 	for rows.Next() {
 		var visitedNode, count int
@@ -153,47 +145,47 @@ func GetFlowStats(flowName string) (*flows.FlowStats, error) {
 			return nil, err
 		}
 
-		flowStats.Stats[visitedNode] = count
+		storiestats.Stats[visitedNode] = count
 	}
 
-	return flowStats, nil
+	return storiestats, nil
 }
 
-// mark nodeId as visited for given flow and user
-func InsertFlowStats(username string, flowName string, nodeId int) error {
-	statement := `INSERT INTO stats	(userId, flow, visitedNode)	VALUES (?, ?, ?);`
+// mark nodeId as visited for given story and user
+func InsertStoriestats(_db *sql.DB, username string, storyName string, nodeId stories.NodeId) error {
+	statement := `INSERT INTO stats	(userId, story, visitedNode)	VALUES (?, ?, ?);`
 
-	_, err := _db.Exec(statement, username, flowName, nodeId)
+	_, err := _db.Exec(statement, username, storyName, nodeId)
 	return err
 }
 
-// get the active flow and state of the specified user
-func GetFlowStateByUserId(userId string) (*flows.FlowState, error) {
-	flowState := &flows.FlowState{}
+// get the active story and state of the specified user
+func GetStoriestateByUserId(_db *sql.DB, userId string) (*stories.Storiestate, error) {
+	storiestate := &stories.Storiestate{}
 	var params []byte
-	statement := `SELECT currentFlow, stateId, params FROM users WHERE userId =	?`
+	statement := `SELECT currentStory, stateId, params FROM users WHERE userId =	?`
 
-	err := _db.QueryRow(statement, userId).Scan(&flowState.Flow, &flowState.State, &params)
+	err := _db.QueryRow(statement, userId).Scan(&storiestate.Story, &storiestate.State, &params)
 
 	if err != nil {
 		return nil, err
 	}
 
-	if err = json.Unmarshal(params, &flowState.Params); err != nil {
+	if err = json.Unmarshal(params, &storiestate.Params); err != nil {
 		return nil, err
 	}
-	return flowState, nil
+	return storiestate, nil
 }
 
-// modify active flow and state for user
-func InsertFlowState(userId string, flowName string, stateId int, params flows.RequestMessageNodeParams) error {
+// modify active story and state for user
+func InsertStoriestate(_db *sql.DB, userId string, storyName string, stateId stories.NodeId, params stories.RequestMessageNodeParams) error {
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
 
-	statement := `INSERT OR	REPLACE	INTO users (userId,	currentFlow, stateId, params) VALUES (?, ?,	?, ?)`
-	_, err = _db.Exec(statement, userId, flowName, stateId, string(paramsJSON))
+	statement := `INSERT OR	REPLACE	INTO users (userId,	currentStory, stateId, params) VALUES (?, ?,	?, ?)`
+	_, err = _db.Exec(statement, userId, storyName, stateId, string(paramsJSON))
 	if err != nil {
 		return err
 	}

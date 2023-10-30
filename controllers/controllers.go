@@ -1,42 +1,43 @@
 package controllers
 
 import (
+	"chatbot/db"
+	"chatbot/stories"
+	"database/sql"
 	"encoding/json"
 	"log"
-	"message-bot-demo/db"
-	"message-bot-demo/flows"
 	"net/http"
 )
 
-// return the next MessageNode of the active flow for the specified user, if possible,
+// return the next MessageNode of the active story for the specified user, if possible,
 // according to messageText. When initialMsg is true, the conversation is initiated so
 // we just return the current node and ignore the messageText
-func HandleMessageActiveFlow(username, messageText string, initialMsg bool) (*flows.MessageNode, error) {
+func HandleMessageActiveStory(_db *sql.DB, username, messageText string, initialMsg bool) (*stories.MessageNode, error) {
 
-	// Get flow for user
-	currentFlowState, err := db.GetFlowStateByUserId(username)
+	// Get story for user
+	currentStoriestate, err := db.GetStoriestateByUserId(_db, username)
 
 	if err != nil {
-		log.Println("can't get flow state")
+		log.Println("can't get story state")
 		return nil, err
 	}
 
-	currentFlowData, err := db.GetFlowDataByName(currentFlowState.Flow)
+	currentStoryData, err := db.GetStoryDataByName(_db, currentStoriestate.Story)
 
 	if err != nil {
-		log.Println("can't get flow data")
+		log.Println("can't get story data")
 		return nil, err
 	}
 
-	flow := &flows.Flow{}
-	err = json.Unmarshal([]byte(currentFlowData), flow)
+	story := &stories.Story{}
+	err = json.Unmarshal([]byte(currentStoryData), story)
 
 	if err != nil {
-		// try to get a default flow
+		// try to get a default story
 		return nil, err
 	}
 
-	currentNode, err := flows.PopulateCurrentNode(flow, currentFlowState.State, currentFlowState.Params)
+	currentNode, err := stories.PopulateCurrentNode(story, currentStoriestate.State, currentStoriestate.Params)
 
 	if err != nil {
 		return nil, err
@@ -45,7 +46,7 @@ func HandleMessageActiveFlow(username, messageText string, initialMsg bool) (*fl
 	outputNode := currentNode
 
 	if !initialMsg {
-		nextNode, err := flows.PopulateNextNode(flow, currentNode, messageText, currentFlowState.Params)
+		nextNode, err := stories.PopulateNextNode(story, currentNode, messageText, currentStoriestate.Params)
 
 		if err != nil {
 			return nil, err
@@ -53,34 +54,43 @@ func HandleMessageActiveFlow(username, messageText string, initialMsg bool) (*fl
 		}
 		outputNode = nextNode
 
-		err = db.InsertFlowState(username, currentFlowState.Flow, outputNode.NodeId, currentFlowState.Params)
+		err = db.InsertStoriestate(_db, username, currentStoriestate.Story, outputNode.NodeId, currentStoriestate.Params)
 
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	err = db.InsertFlowStats(username, flow.Name, outputNode.NodeId)
+	err = db.InsertStoriestats(_db, username, story.Name, outputNode.NodeId)
 	if err != nil {
 		log.Println("Failed to log stats to db", err.Error())
 	}
 
 	if len(outputNode.NextNodes) == 0 {
-		// TODO Reset flow to some default value
-		log.Printf("Flow %s has ended\n", flow.Name)
+		// TODO Reset story to some default value
+		log.Printf("Story %s has ended\n", story.Name)
 	}
 
 	return outputNode, nil
 }
 
-// handler that sets active flow for a user and initiates the conversation
-func MessageHandler(w http.ResponseWriter, r *http.Request) {
+type HttpHandler func(w http.ResponseWriter, r *http.Request)
+
+func HandlerWithDB(db *sql.DB, original func(db *sql.DB, w http.ResponseWriter, r *http.Request)) HttpHandler {
+	result := func(w http.ResponseWriter, r *http.Request) {
+		original(db, w, r)
+	}
+	return result
+}
+
+// handler that sets active story for a user and initiates the conversation
+func MessageHandler(_db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Invalid request", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var messageData flows.RequestSendData
+	var messageData stories.RequestSendData
 	err := json.NewDecoder(r.Body).Decode(&messageData)
 
 	if err != nil {
@@ -91,12 +101,12 @@ func MessageHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println(messageData)
 
 	user := messageData.UserId
-	err = db.InsertFlowState(user, messageData.Flow, messageData.StateId, messageData.Params)
+	err = db.InsertStoriestate(_db, user, messageData.Story, messageData.StateId, messageData.Params)
 	if err != nil {
-		log.Println("Failed to set flow state", err.Error())
+		log.Println("Failed to set story state", err.Error())
 	}
 
-	msgNode, err := HandleMessageActiveFlow(user, "", true)
+	msgNode, err := HandleMessageActiveStory(_db, user, "", true)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -104,17 +114,17 @@ func MessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// TODO use Telegram
-	flows.SendToStdout(msgNode)
+	stories.SendToStdout(msgNode)
 }
 
 // return json with the number of visits of all states for the
-// specified flow
-func StatsHandler(w http.ResponseWriter, r *http.Request) {
+// specified story
+func StatsHandler(_db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Invalid request", http.StatusMethodNotAllowed)
 	}
 
-	var stats flows.RequestStats
+	var stats stories.RequestStats
 	err := json.NewDecoder(r.Body).Decode(&stats)
 
 	if err != nil {
@@ -122,7 +132,7 @@ func StatsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flowStats, err := db.GetFlowStats(stats.Flow)
+	storiestats, err := db.GetStoriestats(_db, stats.Story)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -130,7 +140,7 @@ func StatsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(flowStats)
+	err = json.NewEncoder(w).Encode(storiestats)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

@@ -2,13 +2,14 @@ package main
 
 import (
 	"bufio"
+	"chatbot/controllers"
+	"chatbot/db"
+	"chatbot/stories"
+	"chatbot/utils"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
-	"message-bot-demo/controllers"
-	"message-bot-demo/db"
-	"message-bot-demo/flows"
-	"message-bot-demo/utils"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,7 +21,7 @@ import (
 
 // for telegram integration: send a telegram message equivalent to the provided MessageNode
 // to the specified user
-func SendMessage(bot *tgbotapi.BotAPI, chatId string, messageNode *flows.MessageNode) (*tgbotapi.Message, error) {
+func SendMessage(bot *tgbotapi.BotAPI, chatId string, messageNode *stories.MessageNode) (*tgbotapi.Message, error) {
 	intChatId, err := strconv.ParseInt(chatId, 10, 64)
 
 	if err != nil {
@@ -81,7 +82,7 @@ func SendMessage(bot *tgbotapi.BotAPI, chatId string, messageNode *flows.Message
 
 // TelegramInteraction not used, currently stdin/stdout is used
 // for interaction with the bot
-func TelegramInteraction(bot *tgbotapi.BotAPI) {
+func TelegramInteraction(_db *sql.DB, bot *tgbotapi.BotAPI) {
 
 	updates := bot.ListenForWebhook("/" + bot.Token)
 
@@ -93,7 +94,7 @@ func TelegramInteraction(bot *tgbotapi.BotAPI) {
 		messageText := update.Message.Text
 		username := update.Message.From.UserName
 
-		nextNode, err := controllers.HandleMessageActiveFlow(username, messageText, false)
+		nextNode, err := controllers.HandleMessageActiveStory(_db, username, messageText, false)
 
 		if err != nil {
 		}
@@ -112,7 +113,7 @@ func TelegramInteraction(bot *tgbotapi.BotAPI) {
 }
 
 // TerminalInteraction For testing purposes use stdin/stdout for interaction
-func TerminalInteraction(username string) {
+func TerminalInteraction(_db *sql.DB, username string) {
 
 	updatesFromStdin := make(chan string)
 
@@ -126,7 +127,7 @@ func TerminalInteraction(username string) {
 
 	for messageText := range updatesFromStdin {
 
-		nextNode, err := controllers.HandleMessageActiveFlow(username, messageText, false)
+		nextNode, err := controllers.HandleMessageActiveStory(_db, username, messageText, false)
 
 		if err != nil {
 			// Use other method for non-deterministic processing
@@ -146,37 +147,41 @@ func main() {
 	flag.Parse()
 
 	const dbpath string = "demo.db"
+	_db, err := db.Open(dbpath)
+	if err != nil {
+		log.Fatalln(err.Error())
+	}
+	defer _db.Close()
 
 	// initialize db for testing purposes
 	if _, err := os.Stat(dbpath); os.IsNotExist(err) {
-		err = db.InitTables(dbpath)
+		err = db.InitTables(_db)
 
 		if err != nil {
 			log.Fatalln(err.Error())
 		}
 	}
 
-	err := db.Open(dbpath)
-	_ = db.PopulateDB()
+	_ = db.PopulateDB(_db)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
-	defer db.Close()
 
-	// display the representation of a flow for debugging purposes
-	demoFlow := flows.DemoFlowFactory()
-	fmt.Println(demoFlow.ToString())
+	// display the representation of a story for debugging purposes
+	demoStory := stories.DemoStoryFactory()
+	fmt.Println(demoStory.ToString())
 
 	// interact with the bot using stdin/stdout
 	// TODO use a seperate program
-	go TerminalInteraction(*username)
+	go TerminalInteraction(_db, *username)
 
 	// api for initiating conversations and displaying stats
 	// TODO possibly create a more fine-grained api to handle
 	// message replies
 	router := mux.NewRouter()
-	router.HandleFunc("/api/messages", controllers.MessageHandler)
-	router.HandleFunc("/api/stats", controllers.StatsHandler)
+	router.HandleFunc("/api/messages", controllers.HandlerWithDB(_db, controllers.MessageHandler))
+	router.HandleFunc("/api/stats", controllers.HandlerWithDB(_db, controllers.StatsHandler))
+	// router.HandleFunc("/api/stats", controllers.HandlerWithDB(_db, controllers.StatsHandler))
 
 	const port int = 3000
 	log.Printf("Starting server on port %d...", port)
